@@ -16,7 +16,8 @@ import (
 const typeFound string = " is a shell builtin"
 
 var shellBuiltIn []string = []string{"echo", "exit", "type", "pwd", "cd"}
-var escapeOptions []rune = []rune{'\n', '\\', '$', '"'}
+var escapeOptionsDoubleQuoted []rune = []rune{'\\', '$', '"', ' '}
+var escapeOptionUnquoted []rune = []rune{'\\', '$', '"', ' ', '\''}
 
 func main() {
 	PATH := os.Getenv("PATH")
@@ -41,16 +42,12 @@ func commandProcessor(input, PATH string) {
 	}
 	commandName := commandParts[0]
 	directories := strings.Split(PATH, ":")
-	index := len(commandName)
 	// default stdOut and stdErr output locations
 	outputFilePath := ""
 	errFilePath := ""
 	outputWriter := os.Stdout
 	errWriter := os.Stdout
 
-	if commandName[0] == '\'' || commandName[0] == '"' {
-		commandName, index = parseCommandName(input, commandName)
-	}
 	// create an argParts without the redirection symbol
 
 	outputFilePath, errFilePath = parseOutputRedirect(input)
@@ -59,16 +56,21 @@ func commandProcessor(input, PATH string) {
 
 	// remove redirection so this is not interpreted as a command argument
 	removedRedirect := removeRedirection(input)
-	argsParts, argsString := parseCommandArgs(removedRedirect, index)
+	cmdParsed, argsParts := parseCommandArgs(removedRedirect)
+
+	commandName = cmdParsed
+	argsString := strings.Join(argsParts, " ")
 
 	if outputFilePath != "" {
 		outputWriter, _ = os.OpenFile(outputFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		defer outputWriter.Close()
 	}
 	if errFilePath != "" {
 		errWriter, _ = os.OpenFile(errFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		defer errWriter.Close()
 	}
 	if commandName == "exit" {
-		if argsParts[0] == "0" {
+		if len(argsParts) > 0 && argsParts[0] == "0" {
 			os.Exit(0)
 		}
 	} else if commandName == "echo" {
@@ -130,11 +132,10 @@ func commandProcessor(input, PATH string) {
 		for i := range len(directories) {
 			pathToExecutable, _ := checkForExecutable(directories[i], commandName)
 			if pathToExecutable != "" {
-				cmd := exec.Command(pathToExecutable, argsParts...)
+				cmd := exec.Command(commandName, argsParts...)
 				cmd.Stdin = os.Stdin
 				cmd.Stdout = outputWriter
 				cmd.Stderr = errWriter
-				cmd.Args[0] = commandName
 				err := cmd.Run()
 				if err != nil {
 					//fmt.Fprintln(errWriter, "Error running command: "+err.Error())
@@ -143,7 +144,8 @@ func commandProcessor(input, PATH string) {
 			}
 		}
 		// command contains a trailing \n byte so we slice out that last bit
-		fmt.Fprintln(errWriter, input[:len(input)-1]+": command not found")
+		fmt.Fprintln(errWriter, strings.Join(append([]string{commandName}, argsParts...), " ")+": command not found")
+
 		return
 	}
 }
@@ -159,103 +161,72 @@ func checkForExecutable(path, command string) (string, error) {
 	}
 	return "", nil
 }
+func parseCommandArgs(input string) (string, []string) {
+	commandArgString := strings.TrimRight(input, "\r\n")
+	args := []string{}
+	var token strings.Builder
+	escapeChar := false
+	inDoubleQuotes := false
+	inSingleQuotes := false
+	for i, _ := range commandArgString {
 
-/*
-	func parseCommandArgs(input string, index int) ([]string, string) {
-		// if command name starts
-		argPattern := regexp.MustCompile(`"(\\.|[^"\\])*"|'(\\.|[^'\\])*'|\S+|[ ]+`)
-		argMatches := argPattern.FindAllString(input[index + 1:], -1)
-		argsParts := []string{}
-		argsVal := ""
-		escapeChar := false
-		quotedInsideUnquotedSingle := false
-		quotedInsideUnquotedDouble := false
-		for _, arg := range argMatches {
-			if arg[0] == '\'' || arg[0] == '"' {
-				// quoted string
-				buildQuoted := ""
-				for _, char := range arg[1: len(arg)-1] {
-					if arg[0] == '"' {
-						if char == '"' {
-							if escapeChar {
-								buildQuoted += string(char)
-								continue
-							}
-						}
-						if escapeChar {
-							// previous character was '\\'
-							if slices.Contains(escapeOptions, char) {
-								buildQuoted += string(char)
-							} else {
-								buildQuoted += string('\\')
-								buildQuoted += string(char)
-							}
-							escapeChar = false
-						} else {
-							if char == '\\' {
-								escapeChar = true
-							} else {
-								if !slices.Contains(escapeOptions, char) {
-									buildQuoted += string(char)
-								}
-							}
-						}
-					} else {
-						buildQuoted = arg[1: len(arg)-1]
-					}
-				}
-				argsVal += buildQuoted
-				argsParts = append(argsParts, buildQuoted)
-			} else if strings.Trim(arg, " ") == "" {
-				// empty spaces
-				argsVal += " "
+		char := commandArgString[i]
+		switch {
+		case inSingleQuotes:
+			if char == '\'' {
+				inSingleQuotes = !inSingleQuotes
 			} else {
-				// unquoted string
-				// in unquoted strings we have escape characters
-				buildUnquoted := ""
-				for _, char := range arg {
-					if char == '\\' {
-						escapeChar = !escapeChar
-					} else if char == '\'' {
-						buildUnquoted += string(char)
-						quotedInsideUnquotedSingle = !quotedInsideUnquotedSingle
-						escapeChar = false
-
-					} else if char == '"' {
-						if escapeChar {
-							if slices.Contains(escapeOptions, char) {
-								buildUnquoted += string(char)
-							} else {
-								buildUnquoted += string('\\')
-								buildUnquoted += string(char)
-							}
-							escapeChar = false
-						} else {
-							quotedInsideUnquotedDouble = !quotedInsideUnquotedDouble
-						}
-					}
-					if quotedInsideUnquotedDouble || quotedInsideUnquotedSingle {
-						if char == ' ' {
-							buildUnquoted += string(char)
-						}
-					}
-					if char != ' ' {
-						buildUnquoted += string(char)
-					}
-
-
-				}
-				argsVal += buildUnquoted
-				arg = strings.Trim(buildUnquoted, "\r\n ")
-				argsParts = append(argsParts, arg)
+				token.WriteByte(char)
 			}
+		case escapeChar:
+			var escapeOptions []rune
+			switch {
+			case inDoubleQuotes:
+				escapeOptions = escapeOptionsDoubleQuoted
+			default:
+				escapeOptions = escapeOptionUnquoted
+			}
+			if slices.Contains(escapeOptions, rune(char)) {
+				token.WriteByte(char)
+			} else {
+				switch {
+				case inDoubleQuotes:
+					token.WriteByte('\\')
+					token.WriteByte(char)
+				case !inDoubleQuotes:
+					token.WriteByte(char)
+				}
+			}
+			escapeChar = false
+		case char == '\\':
+			// single quote already handled so in case of double or unquoted
+			escapeChar = true
+		case char == '"':
+			inDoubleQuotes = !inDoubleQuotes
+		case char == '\'':
+			if !inDoubleQuotes {
+				inSingleQuotes = !inSingleQuotes
+			} else {
+				token.WriteByte(char)
+			}
+		case char == ' ':
+			if inDoubleQuotes {
+				token.WriteByte(char)
+			} else {
+				if token.Len() > 0 {
+					args = append(args, token.String())
+					token.Reset()
+				}
+			}
+		default:
+			token.WriteByte(char)
 		}
-		argsVal = strings.Trim(argsVal, "\r\n")
-		return argsParts, argsVal
 	}
-*/
-func parseCommandArgs(input string, index int) ([]string, string) {
-	return make([]string, 0), ""
+	if token.Len() > 0 {
+		args = append(args, token.String())
+	}
+	commandName := args[0]
+	return commandName, args[1:]
 }
 
 func parseCommandName(input, commandName string) (string, int) {
@@ -273,7 +244,7 @@ func parseCommandName(input, commandName string) (string, int) {
 				break
 			}
 			if escapedChar {
-				if slices.Contains(escapeOptions, char) {
+				if slices.Contains(escapeOptionsDoubleQuoted, char) {
 					commandName += string(char)
 				} else {
 					commandName += string('\\')
@@ -284,7 +255,7 @@ func parseCommandName(input, commandName string) (string, int) {
 				if char == '\\' {
 					escapedChar = true
 				} else {
-					if !slices.Contains(escapeOptions, char) {
+					if !slices.Contains(escapeOptionsDoubleQuoted, char) {
 						commandName += string(char)
 					}
 				}
