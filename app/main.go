@@ -45,14 +45,14 @@ func commandProcessor(input, PATH string) {
 	// default stdOut and stdErr output locations
 	outputFilePath := ""
 	errFilePath := ""
+	outputAppendFilePath := ""
+	errFileAppendFilePath := ""
 	outputWriter := os.Stdout
 	errWriter := os.Stdout
 
 	// create an argParts without the redirection symbol
 
-	outputFilePath, errFilePath = parseOutputRedirect(input)
-	os.MkdirAll(filepath.Dir(outputFilePath), 0755)
-	os.MkdirAll(filepath.Dir(errFilePath), 0755)
+	outputFilePath, errFilePath, outputAppendFilePath, errFileAppendFilePath = parseOutputRedirect(input)
 
 	// remove redirection so this is not interpreted as a command argument
 	removedRedirect := removeRedirection(input)
@@ -60,14 +60,29 @@ func commandProcessor(input, PATH string) {
 
 	commandName = cmdParsed
 	argsString := strings.Join(argsParts, " ")
-
+	var err error
 	if outputFilePath != "" {
-		outputWriter, _ = os.OpenFile(outputFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		os.MkdirAll(filepath.Dir(outputFilePath), 0755)
+		outputWriter, err = os.OpenFile(outputFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 		defer outputWriter.Close()
 	}
 	if errFilePath != "" {
-		errWriter, _ = os.OpenFile(errFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0644)
+		os.MkdirAll(filepath.Dir(errFilePath), 0755)
+		errWriter, err = os.OpenFile(errFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
 		defer errWriter.Close()
+	}
+	if outputAppendFilePath != "" {
+		os.MkdirAll(filepath.Dir(outputAppendFilePath), 0755)
+		outputWriter, err = os.OpenFile(outputAppendFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
+		defer outputWriter.Close()
+	}
+	if errFileAppendFilePath != "" {
+		os.MkdirAll(filepath.Dir(errFileAppendFilePath), 0755)
+		errWriter, err = os.OpenFile(errFileAppendFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
+		defer errWriter.Close()
+	}
+	if err != nil {
+		fmt.Println("Error creating out/err writer: " + err.Error())
 	}
 	if commandName == "exit" {
 		if len(argsParts) > 0 && argsParts[0] == "0" {
@@ -313,35 +328,58 @@ func parseCommandName(input, commandName string) (string, int) {
 		return strings.Trim(outputFilePath, " >"), strings.Trim(errFilePath, " >")
 	}
 */
-func parseOutputRedirect(input string) (string, string) {
-	stdOutRedirectPattern := `(?:^|[^2])>[\s]*"([^"]+)"|(?:^|[^2])>[\s]*'([^']+)'|(?:^|[^2])>[\s]*([^\s]+)`
-	stdErrRedirectPattern := `2>[\s]*"([^"]+)"|2>[\s]*'([^']+)'|2>[\s]*(\S+)`
+func parseOutputRedirect(input string) (string, string, string, string) {
+	stdOutRedirectPattern := `(?:^|\s)1?>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
+	stdOutAppendPattern := `(?:^|\s)1?>>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
+	stdErrRedirectPattern := `(?:^|\s)2{1}>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
+	stdErrAppendPattern := `(?:^|\s)2{1}>>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
 
 	stdOutReg := regexp.MustCompile(stdOutRedirectPattern)
 	stdErrReg := regexp.MustCompile(stdErrRedirectPattern)
 
+	stdOutAppendReg := regexp.MustCompile(stdOutAppendPattern)
+	stdErrAppendReg := regexp.MustCompile(stdErrAppendPattern)
+
 	stdOutMatch := stdOutReg.FindStringSubmatch(input)
 	stdErrMatch := stdErrReg.FindStringSubmatch(input)
+
+	stdOutAppendMatch := stdOutAppendReg.FindStringSubmatch(input)
+	stdErrAppendMatch := stdErrAppendReg.FindStringSubmatch(input)
+
 	stdOutRes := ""
 	stdErrRes := ""
+	stdOutAppendRes := ""
+	stdErrAppendRes := ""
 	if stdOutMatch != nil {
 		stdOutRes = stdOutMatch[1] + stdOutMatch[2] + stdOutMatch[3]
 	}
 	if stdErrMatch != nil {
 		stdErrRes = stdErrMatch[1] + stdErrMatch[2] + stdErrMatch[3]
 	}
-	return stdOutRes, stdErrRes
+	if stdOutAppendMatch != nil {
+		stdOutAppendRes = stdOutAppendMatch[1] + stdOutAppendMatch[2] + stdOutAppendMatch[3]
+	}
+	if stdErrAppendMatch != nil {
+		stdErrAppendRes = stdErrAppendMatch[1] + stdErrAppendMatch[2] + stdErrAppendMatch[3]
+	}
+	return stdOutRes, stdErrRes, stdOutAppendRes, stdErrAppendRes
 
 }
 
 func removeRedirection(input string) string {
-	stdOutRedirectPattern := `(?:^|[^2])>[\s]*"([^"]+)"|(?:^|[^2])>[\s]*'([^']+)'|(?:^|[^2])>[\s]*([^\s]+)`
-	stdErrRedirectPattern := `2>[\s]*"([^"]+)"|2>[\s]*'([^']+)'|2>[\s]*(\S+)`
+	stdOutRedirectPattern := `(?:^|\s)1?>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
+	stdOutAppendPattern := `(?:^|\s)1?>>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
+	stdErrRedirectPattern := `(?:^|\s)2{1}>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
+	stdErrAppendPattern := `(?:^|\s)2{1}>>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
 
 	stdOutReg := regexp.MustCompile(stdOutRedirectPattern)
 	stdErrReg := regexp.MustCompile(stdErrRedirectPattern)
+	stdOutAppendReg := regexp.MustCompile(stdOutAppendPattern)
+	stdErrAppendReg := regexp.MustCompile(stdErrAppendPattern)
 
 	res := stdOutReg.ReplaceAllString(input, "")
 	res = stdErrReg.ReplaceAllString(res, "")
+	res = stdOutAppendReg.ReplaceAllString(res, "")
+	res = stdErrAppendReg.ReplaceAllString(res, "")
 	return res
 }
