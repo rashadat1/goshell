@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +10,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+
+	"github.com/chzyer/readline"
 )
 
 const typeFound string = " is a shell builtin"
@@ -21,13 +22,24 @@ var escapeOptionUnquoted []rune = []rune{'\\', '$', '"', ' ', '\''}
 
 func main() {
 	PATH := os.Getenv("PATH")
+	autoCompleter := readline.NewPrefixCompleter(
+		readline.PcItem("exit"),
+		readline.PcItem("echo"),
+	)
+	l, err := readline.NewEx(&readline.Config{
+		Prompt:       "$ ",
+		AutoComplete: autoCompleter,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer l.Close()
 	for {
 		_, err := fmt.Fprint(os.Stdout, "$ ")
 		if err != nil {
 			log.Println("Error writing shell intialization bytes to stdout: " + err.Error())
 		}
-		in := bufio.NewReader(os.Stdin)
-		command, err := in.ReadString('\n')
+		command, err := l.Readline()
 		if err != nil {
 			log.Println("Error reading string from standard in " + err.Error())
 		}
