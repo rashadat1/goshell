@@ -20,15 +20,36 @@ var shellBuiltIn []string = []string{"echo", "exit", "type", "pwd", "cd"}
 var escapeOptionsDoubleQuoted []rune = []rune{'\\', '$', '"', ' '}
 var escapeOptionUnquoted []rune = []rune{'\\', '$', '"', ' ', '\''}
 
+// the AutoCompleter interface requires one method
+// Do(line []rune, pos int) (newLine [][]rune, length int)
+// AutoComplete in the readline.Config struct is of type AutoCompleter
+// so we need to give our TabAutoCompleter a Do method with this
+// signature, instantiate the TabAutoCompleter and pass it as the autocompleter
+type TabAutoCompleter struct {
+	Commands []string
+}
+
+func (tac *TabAutoCompleter) Do(line []rune, pos int) ([][]rune, int) {
+	input := string(line[:pos])
+	autoCompleteResults := make([][]rune, 0)
+	for _, cmd := range tac.Commands {
+		if strings.HasPrefix(cmd, input) {
+			autoCompleteResults = append(autoCompleteResults, []rune(cmd[pos:]+" "))
+		}
+	}
+	if len(autoCompleteResults) == 0 {
+		fmt.Fprint(os.Stdout, "\x07")
+	}
+	return autoCompleteResults, pos
+}
 func main() {
+	completer := &TabAutoCompleter{
+		Commands: shellBuiltIn,
+	}
 	PATH := os.Getenv("PATH")
-	autoCompleter := readline.NewPrefixCompleter(
-		readline.PcItem("exit"),
-		readline.PcItem("echo"),
-	)
 	l, err := readline.NewEx(&readline.Config{
 		Prompt:       "$ ",
-		AutoComplete: autoCompleter,
+		AutoComplete: completer,
 	})
 	if err != nil {
 		log.Fatal(err)
