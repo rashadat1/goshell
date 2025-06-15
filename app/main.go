@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/chzyer/readline"
@@ -26,27 +27,94 @@ var escapeOptionUnquoted []rune = []rune{'\\', '$', '"', ' ', '\''}
 // so we need to give our TabAutoCompleter a Do method with this
 // signature, instantiate the TabAutoCompleter and pass it as the autocompleter
 type TabAutoCompleter struct {
-	Commands []string
+	Commands  []string
+	Path      string
+	TabCount  int
+	LastInput string
 }
 
 func (tac *TabAutoCompleter) Do(line []rune, pos int) ([][]rune, int) {
 	input := string(line[:pos])
+
 	autoCompleteResults := make([][]rune, 0)
+	executableResults := getExecutables(tac.Path, input)
 	for _, cmd := range tac.Commands {
 		if strings.HasPrefix(cmd, input) {
 			autoCompleteResults = append(autoCompleteResults, []rune(cmd[pos:]+" "))
 		}
 	}
+	for _, cmdExec := range executableResults {
+		autoCompleteResults = append(autoCompleteResults, []rune(cmdExec[pos:]+" "))
+	}
 	if len(autoCompleteResults) == 0 {
 		fmt.Fprint(os.Stdout, "\x07")
+		return nil, pos
 	}
-	return autoCompleteResults, pos
+	sort.Slice(autoCompleteResults, func(i, j int) bool {
+		return string(autoCompleteResults[i]) < string(autoCompleteResults[j])
+	})
+	if len(executableResults) == 1 {
+		return [][]rune{[]rune(executableResults[0][pos:] + " ")}, pos
+	}
+	if len(executableResults) == 0 && len(autoCompleteResults) >= 1 {
+		return autoCompleteResults, pos
+	}
+	if len(executableResults) > 1 {
+		autoCompleteStrings := make([]string, 0)
+		shortestMatch := findShortestString(autoCompleteResults)
+		hasSharedPrefix := haveSharedPrefix(shortestMatch, autoCompleteResults)
+		if hasSharedPrefix {
+			return [][]rune{[]rune(shortestMatch)}, pos
+		} else {
+			if tac.TabCount == 0 {
+				fmt.Fprint(os.Stdout, "\a")
+				tac.TabCount++
+				tac.LastInput = input
+				return nil, pos
+			} else {
+				for _, match := range executableResults {
+					autoCompleteStrings = append(autoCompleteStrings, match)
+				}
+				sort.Slice(autoCompleteStrings, func(i, j int) bool {
+					return string(autoCompleteStrings[i]) < string(autoCompleteStrings[j])
+				})
+				fmt.Println()
+				fmt.Println(strings.Join(autoCompleteStrings, "  "))
+				fmt.Printf("$ %s", input)
+				tac.TabCount++
+			}
+		}
+
+	}
+	return nil, pos
+}
+func findShortestString(autoCompleteResults [][]rune) string {
+	shortestLength := 100000
+	shortestCandidate := ""
+	for _, result := range autoCompleteResults {
+		if len(result) < shortestLength {
+			shortestLength = len(result)
+			shortestCandidate = string(result)
+		}
+	}
+	return strings.Trim(shortestCandidate, " ")
+}
+func haveSharedPrefix(shortestMatch string, autoCompleteResults [][]rune) bool {
+	for _, runeSliceRes := range autoCompleteResults {
+		stringSliceRes := string(runeSliceRes)
+		if !strings.HasPrefix(stringSliceRes, shortestMatch) {
+			return false
+		}
+	}
+	return true
 }
 func main() {
+	PATH := os.Getenv("PATH")
 	completer := &TabAutoCompleter{
 		Commands: shellBuiltIn,
+		Path:     PATH,
+		TabCount: 0,
 	}
-	PATH := os.Getenv("PATH")
 	l, err := readline.NewEx(&readline.Config{
 		Prompt:       "$ ",
 		AutoComplete: completer,
@@ -65,6 +133,8 @@ func main() {
 			log.Println("Error reading string from standard in " + err.Error())
 		}
 		commandProcessor(command, PATH)
+		completer.TabCount = 0
+		completer.LastInput = ""
 	}
 }
 
@@ -209,6 +279,29 @@ func checkForExecutable(path, command string) (string, error) {
 	}
 	return "", nil
 }
+func checkForExecutableSuffix(path, input string) ([]string, error) {
+	c, err := os.ReadDir(path)
+	res := make([]string, 0)
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range c {
+		if strings.HasPrefix(entry.Name(), input) {
+			res = append(res, entry.Name())
+		}
+	}
+	return res, nil
+}
+func getExecutables(PATH string, input string) []string {
+	directories := strings.Split(PATH, ":")
+	res := make([]string, 0)
+	for i := range len(directories) {
+		pathsToExecutables, _ := checkForExecutableSuffix(directories[i], input)
+		res = append(res, pathsToExecutables...)
+	}
+	return res
+}
+
 func parseCommandArgs(input string) (string, []string) {
 	commandArgString := strings.TrimRight(input, "\r\n")
 	args := []string{}
