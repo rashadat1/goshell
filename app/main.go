@@ -72,9 +72,8 @@ func (tac *TabAutoCompleter) Do(line []rune, pos int) ([][]rune, int) {
 				tac.LastInput = input
 				return nil, pos
 			} else {
-				for _, match := range executableResults {
-					autoCompleteStrings = append(autoCompleteStrings, match)
-				}
+				autoCompleteStrings = append(autoCompleteStrings, executableResults...)
+
 				sort.Slice(autoCompleteStrings, func(i, j int) bool {
 					return string(autoCompleteStrings[i]) < string(autoCompleteStrings[j])
 				})
@@ -143,7 +142,6 @@ func commandProcessor(input, PATH string) {
 	for i := range commandParts {
 		commandParts[i] = strings.Trim(commandParts[i], "\r\n ")
 	}
-	commandName := commandParts[0]
 	directories := strings.Split(PATH, ":")
 	// default stdOut and stdErr output locations
 	outputFilePath := ""
@@ -161,32 +159,30 @@ func commandProcessor(input, PATH string) {
 	removedRedirect := removeRedirection(input)
 	cmdParsed, argsParts := parseCommandArgs(removedRedirect)
 
-	commandName = cmdParsed
+	commandName := cmdParsed
 	argsString := strings.Join(argsParts, " ")
 	var err error
 	if outputFilePath != "" {
 		os.MkdirAll(filepath.Dir(outputFilePath), 0755)
 		outputWriter, err = os.OpenFile(outputFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
-		defer outputWriter.Close()
 	}
 	if errFilePath != "" {
 		os.MkdirAll(filepath.Dir(errFilePath), 0755)
 		errWriter, err = os.OpenFile(errFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
-		defer errWriter.Close()
 	}
 	if outputAppendFilePath != "" {
 		os.MkdirAll(filepath.Dir(outputAppendFilePath), 0755)
 		outputWriter, err = os.OpenFile(outputAppendFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
-		defer outputWriter.Close()
 	}
 	if errFileAppendFilePath != "" {
 		os.MkdirAll(filepath.Dir(errFileAppendFilePath), 0755)
 		errWriter, err = os.OpenFile(errFileAppendFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
-		defer errWriter.Close()
 	}
 	if err != nil {
 		fmt.Println("Error creating out/err writer: " + err.Error())
 	}
+	defer outputWriter.Close()
+	defer errWriter.Close()
 	if commandName == "exit" {
 		if len(argsParts) > 0 && argsParts[0] == "0" {
 			os.Exit(0)
