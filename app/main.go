@@ -213,6 +213,9 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 		}
 		cmd = strings.TrimSpace(cmd)
 		cmdName, cmdArgs := parseCommandArgs(cmd)
+		if slices.Contains(shellBuiltIn, cmdName) {
+			os.Pipe
+		}
 		cmdExec := exec.Command(cmdName, cmdArgs...)
 		if prevInputPipeReader != nil {
 			cmdExec.Stdin = prevInputPipeReader
@@ -301,65 +304,8 @@ func commandProcessor(input, PATH string) {
 	if errWriter != os.Stdout {
 		defer errWriter.Close()
 	}
-	if commandName == "exit" {
-		if len(argsParts) > 0 && argsParts[0] == "0" {
-			os.Exit(0)
-		}
-	} else if commandName == "echo" {
-		fmt.Fprintln(outputWriter, argsString)
-		return
-	} else if commandName == "type" {
-		if len(argsParts) == 0 {
-			fmt.Fprintln(errWriter, "type takes two arguments but none were given")
-			return
-		}
-		typeArg := strings.Join(argsParts, " ")
-		if slices.Contains(shellBuiltIn, typeArg) {
-			fmt.Fprintln(outputWriter, typeArg+typeFound)
-			return
-		}
-		for i := range len(directories) {
-			pathToExecutable, _ := checkForExecutable(directories[i], typeArg)
-			if pathToExecutable != "" {
-				fmt.Fprintln(outputWriter, typeArg+" is "+pathToExecutable)
-				return
-			}
-		}
-		fmt.Fprintln(errWriter, typeArg+": not found")
-		return
-	} else if commandName == "pwd" {
-		if len(commandParts) > 1 {
-			fmt.Fprintln(errWriter, "pwd takes no arguments but some were given")
-			return
-		}
-		workingDir, err := os.Getwd()
-		if err != nil {
-			//fmt.Fprintln(errWriter, "Error running command: "+err.Error())
-			return
-		}
-		fmt.Fprintln(outputWriter, workingDir)
-		return
-	} else if commandName == "cd" {
-		if len(commandParts) != 2 {
-			fmt.Fprintln(errWriter, "cd takes exactly one argument")
-			return
-		}
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			//fmt.Fprintln(errWriter, "Error running command: "+err.Error())
-			return
-		}
-		cdPath := argsString
-		cleanedPath := path.Clean(strings.ReplaceAll(cdPath, "~", homeDir))
-		err = os.Chdir(cleanedPath)
-		if err != nil {
-			if err.Error() == "chdir "+cdPath+": no such file or directory" {
-				fmt.Fprintln(errWriter, "cd: "+cdPath+": No such file or directory")
-				return
-			}
-			//fmt.Fprintln(errWriter, "Error running command: "+err.Error())
-			return
-		}
+	if slices.Contains(shellBuiltIn, commandName) {
+		shellBuiltInHandler(commandName, argsString, outputWriter, errWriter, directories, argsParts)
 	} else {
 		for i := range len(directories) {
 			pathToExecutable, _ := checkForExecutable(directories[i], commandName)
@@ -370,14 +316,13 @@ func commandProcessor(input, PATH string) {
 				cmd.Stderr = errWriter
 				err := cmd.Run()
 				if err != nil {
-					//fmt.Fprintln(errWriter, "Error running command: "+err.Error())
+					fmt.Fprintln(errWriter, "Error running command: "+err.Error())
 				}
 				return
 			}
 		}
 		// command contains a trailing \n byte so we slice out that last bit
 		fmt.Fprintln(errWriter, strings.Join(append([]string{commandName}, argsParts...), " ")+": command not found")
-
 		return
 	}
 }
@@ -525,6 +470,73 @@ func parseCommandName(input, commandName string) (string, int) {
 		}
 	}
 	return commandName, i
+}
+func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter *os.File, directories, argsParts []string) {
+	switch commandName {
+	case "exit":
+		if len(argsParts) > 0 && argsParts[0] == "0" {
+			os.Exit(0)
+		}
+
+	case "echo":
+		fmt.Fprintln(outputWriter, argsString)
+		return
+
+	case "type":
+		if len(argsParts) == 0 {
+			fmt.Fprintln(errWriter, "type takes two arguments but none were given")
+			return
+		}
+		typeArg := strings.Join(argsParts, " ")
+		if slices.Contains(shellBuiltIn, typeArg) {
+			fmt.Fprintln(outputWriter, typeArg+typeFound)
+			return
+		}
+		for i := range len(directories) {
+			pathToExecutable, _ := checkForExecutable(directories[i], typeArg)
+			if pathToExecutable != "" {
+				fmt.Fprintln(outputWriter, typeArg+" is "+pathToExecutable)
+				return
+			}
+		}
+		fmt.Fprintln(errWriter, typeArg+": not found")
+		return
+
+	case "pwd":
+		if len(commandParts) > 1 {
+			fmt.Fprintln(errWriter, "pwd takes no arguments but some were given")
+			return
+		}
+		workingDir, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintln(errWriter, "Error running command: "+err.Error())
+			return
+		}
+		fmt.Fprintln(outputWriter, workingDir)
+		return
+
+	case "cd":
+		if len(commandParts) != 2 {
+			fmt.Fprintln(errWriter, "cd takes exactly one argument")
+			return
+		}
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			fmt.Fprintln(errWriter, "Error running command: "+err.Error())
+			return
+		}
+		cdPath := argsString
+		cleanedPath := path.Clean(strings.ReplaceAll(cdPath, "~", homeDir))
+		err = os.Chdir(cleanedPath)
+		if err != nil {
+			if err.Error() == "chdir "+cdPath+": no such file or directory" {
+				fmt.Fprintln(errWriter, "cd: "+cdPath+": No such file or directory")
+				return
+			}
+			fmt.Fprintln(errWriter, "Error running command: "+err.Error())
+			return
+		}
+	}
 }
 
 /*
