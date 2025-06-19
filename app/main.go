@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -72,8 +73,9 @@ func (tac *TabAutoCompleter) Do(line []rune, pos int) ([][]rune, int) {
 				tac.LastInput = input
 				return nil, pos
 			} else {
-				autoCompleteStrings = append(autoCompleteStrings, executableResults...)
-
+				for _, match := range executableResults {
+					autoCompleteStrings = append(autoCompleteStrings, match)
+				}
 				sort.Slice(autoCompleteStrings, func(i, j int) bool {
 					return string(autoCompleteStrings[i]) < string(autoCompleteStrings[j])
 				})
@@ -131,12 +133,125 @@ func main() {
 		if err != nil {
 			log.Println("Error reading string from standard in " + err.Error())
 		}
-		commandProcessor(command, PATH)
+		if strings.Contains(command, "|") {
+			pipedCommands := separatePipedCommands(command)
+			pipedCommandProccesor(pipedCommands, PATH)
+		} else {
+			commandProcessor(command, PATH)
+		}
 		completer.TabCount = 0
 		completer.LastInput = ""
 	}
 }
+func separatePipedCommands(input string) []string {
+	inDoubleQuotes := false
+	inSingleQuotes := false
+	pipeParts := make([]string, 0)
+	currCommand := ""
+	for i := range input {
+		switch input[i] {
+		case '|':
+			if !inDoubleQuotes && !inSingleQuotes {
+				pipeParts = append(pipeParts, strings.TrimSpace(currCommand))
+				currCommand = ""
+			}
+		case '"':
+			inDoubleQuotes = !inDoubleQuotes
+			currCommand += string('"')
+		case '\'':
+			inSingleQuotes = !inSingleQuotes
+			currCommand += string('\'')
+		default:
+			currCommand += string(input[i])
+		}
+	}
+	if currCommand != "" {
+		pipeParts = append(pipeParts, currCommand)
+	}
+	return pipeParts
+}
+func pipedCommandProccesor(pipedCommands []string, PATH string) {
+	var cmds []*exec.Cmd
+	var readers []*io.PipeReader
+	var writers []*io.PipeWriter
+	//directories := strings.Split(PATH, ":")
+	outputFilePath := ""
+	errFilePath := ""
+	outputAppendFilePath := ""
+	errFileAppendFilePath := ""
 
+	var prevInputPipeReader *io.PipeReader
+	// for potential  redirects in the last command in the pipe
+	outputWriter := os.Stdout
+	errWriter := os.Stdout
+	for i, cmd := range pipedCommands {
+		if i == len(pipedCommands)-1 {
+			outputFilePath, errFilePath, outputAppendFilePath, errFileAppendFilePath = parseOutputRedirect(cmd)
+			// remove redirection so this is not interpreted as a command argument
+			removedRedirect := removeRedirection(cmd)
+			cmd = removedRedirect
+			var err error
+			if outputFilePath != "" {
+				os.MkdirAll(filepath.Dir(outputFilePath), 0755)
+				outputWriter, err = os.OpenFile(outputFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+			}
+			if errFilePath != "" {
+				os.MkdirAll(filepath.Dir(errFilePath), 0755)
+				errWriter, err = os.OpenFile(errFilePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0755)
+			}
+			if outputAppendFilePath != "" {
+				os.MkdirAll(filepath.Dir(outputAppendFilePath), 0755)
+				outputWriter, err = os.OpenFile(outputAppendFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
+			}
+			if errFileAppendFilePath != "" {
+				os.MkdirAll(filepath.Dir(errFileAppendFilePath), 0755)
+				errWriter, err = os.OpenFile(errFileAppendFilePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0755)
+			}
+			if err != nil {
+				fmt.Println("Error creating out/err writer: " + err.Error())
+			}
+		}
+		cmd = strings.TrimSpace(cmd)
+		cmdName, cmdArgs := parseCommandArgs(cmd)
+		cmdExec := exec.Command(cmdName, cmdArgs...)
+		if prevInputPipeReader != nil {
+			cmdExec.Stdin = prevInputPipeReader
+		} else {
+			cmdExec.Stdin = os.Stdin
+		}
+		if i < len(pipedCommands)-1 {
+			reader, writer := io.Pipe()
+			cmdExec.Stdout = writer
+			cmdExec.Stderr = writer
+
+			prevInputPipeReader = reader
+			readers = append(readers, reader)
+			writers = append(writers, writer)
+
+		}
+		if i == len(pipedCommands)-1 {
+			cmdExec.Stdout = outputWriter
+			cmdExec.Stderr = errWriter
+		}
+		cmds = append(cmds, cmdExec)
+	}
+	// Start all of the commands we have collected in cmds
+	for _, cmd := range cmds {
+		err := cmd.Start()
+		if err != nil {
+			log.Fatalf("Error executing command %v within an io pipe", cmd)
+		}
+	}
+	for i, cmd := range cmds {
+		err := cmd.Wait()
+		if err != nil {
+			log.Fatalf("Command %v failed to execute with error %v", cmd, err)
+		}
+		if i < len(writers) {
+			writers[i].Close()
+		}
+	}
+}
 func commandProcessor(input, PATH string) {
 	commandParts := strings.Split(input, " ")
 	for i := range commandParts {
@@ -152,7 +267,6 @@ func commandProcessor(input, PATH string) {
 	errWriter := os.Stdout
 
 	// create an argParts without the redirection symbol
-
 	outputFilePath, errFilePath, outputAppendFilePath, errFileAppendFilePath = parseOutputRedirect(input)
 
 	// remove redirection so this is not interpreted as a command argument
@@ -181,8 +295,12 @@ func commandProcessor(input, PATH string) {
 	if err != nil {
 		fmt.Println("Error creating out/err writer: " + err.Error())
 	}
-	defer outputWriter.Close()
-	defer errWriter.Close()
+	if outputWriter != os.Stdout {
+		defer outputWriter.Close()
+	}
+	if errWriter != os.Stdout {
+		defer errWriter.Close()
+	}
 	if commandName == "exit" {
 		if len(argsParts) > 0 && argsParts[0] == "0" {
 			os.Exit(0)
