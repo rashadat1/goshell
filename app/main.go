@@ -213,9 +213,11 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 		}
 		cmd = strings.TrimSpace(cmd)
 		cmdName, cmdArgs := parseCommandArgs(cmd)
-		if slices.Contains(shellBuiltIn, cmdName) {
-			os.Pipe
-		}
+		/*
+			if slices.Contains(shellBuiltIn, cmdName) {
+				os.Pipe
+			}
+		*/
 		cmdExec := exec.Command(cmdName, cmdArgs...)
 		if prevInputPipeReader != nil {
 			cmdExec.Stdin = prevInputPipeReader
@@ -305,7 +307,7 @@ func commandProcessor(input, PATH string) {
 		defer errWriter.Close()
 	}
 	if slices.Contains(shellBuiltIn, commandName) {
-		shellBuiltInHandler(commandName, argsString, outputWriter, errWriter, directories, argsParts)
+		shellBuiltInHandler(commandName, argsString, outputWriter, errWriter, directories, argsParts, commandParts)
 	} else {
 		for i := range len(directories) {
 			pathToExecutable, _ := checkForExecutable(directories[i], commandName)
@@ -471,7 +473,7 @@ func parseCommandName(input, commandName string) (string, int) {
 	}
 	return commandName, i
 }
-func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter *os.File, directories, argsParts []string) {
+func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter *os.File, directories, argsParts, commandParts []string) {
 	switch commandName {
 	case "exit":
 		if len(argsParts) > 0 && argsParts[0] == "0" {
