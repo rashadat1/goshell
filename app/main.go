@@ -12,6 +12,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/chzyer/readline"
 )
@@ -124,11 +125,8 @@ func main() {
 		log.Fatal(err)
 	}
 	defer l.Close()
+	_, err = fmt.Fprint(os.Stdout, "$ ")
 	for {
-		_, err := fmt.Fprint(os.Stdout, "$ ")
-		if err != nil {
-			log.Println("Error writing shell intialization bytes to stdout: " + err.Error())
-		}
 		command, err := l.Readline()
 		if err != nil {
 			log.Println("Error reading string from standard in " + err.Error())
@@ -141,6 +139,7 @@ func main() {
 		}
 		completer.TabCount = 0
 		completer.LastInput = ""
+		fmt.Fprint(os.Stdout, "$ ")
 	}
 }
 func separatePipedCommands(input string) []string {
@@ -174,6 +173,7 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 	var cmds []*exec.Cmd
 	var readers []*io.PipeReader
 	var writers []*io.PipeWriter
+	var wg sync.WaitGroup
 	//directories := strings.Split(PATH, ":")
 	outputFilePath := ""
 	errFilePath := ""
@@ -213,17 +213,65 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 		}
 		cmd = strings.TrimSpace(cmd)
 		cmdName, cmdArgs := parseCommandArgs(cmd)
-		/*
-			if slices.Contains(shellBuiltIn, cmdName) {
-				os.Pipe
+		if slices.Contains(shellBuiltIn, cmdName) {
+			var r io.Reader
+			var w io.Writer
+			// create pipe reader/writer for reading and writing output
+			if i < len(pipedCommands)-1 {
+				r, w = io.Pipe()
+			} else {
+				r = nil
+				w = os.Stdout
 			}
-		*/
+			// create a goroutine to simulate built-in command execution
+			wg.Add(1)
+			go func(cmdName string, in io.Reader, out, errWriter io.Writer, passedCmdArgs []string) {
+				defer wg.Done()
+				if pipeWriter, ok := out.(*io.PipeWriter); ok {
+					defer pipeWriter.Close()
+				}
+				var inputBytes []byte
+				var cmdArgs []string
+				var input string
+				if r, ok := in.(*io.PipeReader); ok && r != nil {
+					if cmdName != "type" {
+						inputBytes, _ = io.ReadAll(r)
+						input = string(inputBytes)
+						cmdArgs = strings.Split(input, " ")
+					} else {
+						io.Copy(io.Discard, in)
+						cmdArgs = passedCmdArgs
+						input = strings.Join(cmdArgs, " ")
+					}
+				} else {
+					cmdArgs = passedCmdArgs
+					input = strings.Join(cmdArgs, " ")
+				}
+				directories := strings.Split(PATH, ":")
+				shellBuiltInHandler(cmdName, input, out, out, directories, cmdArgs)
+			}(cmdName, prevInputPipeReader, w, w, cmdArgs)
+			if pipeReader, ok := r.(*io.PipeReader); ok && r != nil {
+				prevInputPipeReader = pipeReader
+			} else {
+				prevInputPipeReader = nil
+			}
+			continue
+		}
 		cmdExec := exec.Command(cmdName, cmdArgs...)
 		if prevInputPipeReader != nil {
 			cmdExec.Stdin = prevInputPipeReader
 		} else {
 			cmdExec.Stdin = os.Stdin
 		}
+		/*
+			fmt.Printf("Command Name executable: %v\n", cmdName)
+			outputBytes := make([]byte, 1028)
+			_, err := prevInputPipeReader.Read(outputBytes)
+			if err != nil {
+				fmt.Printf("Error reading from previous command: %v\n", err)
+			}
+			fmt.Printf("Result from previous command: %v\n", string(outputBytes))
+		*/
 		if i < len(pipedCommands)-1 {
 			reader, writer := io.Pipe()
 			cmdExec.Stdout = writer
@@ -256,6 +304,7 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 			writers[i].Close()
 		}
 	}
+	wg.Wait()
 }
 func commandProcessor(input, PATH string) {
 	commandParts := strings.Split(input, " ")
@@ -307,7 +356,7 @@ func commandProcessor(input, PATH string) {
 		defer errWriter.Close()
 	}
 	if slices.Contains(shellBuiltIn, commandName) {
-		shellBuiltInHandler(commandName, argsString, outputWriter, errWriter, directories, argsParts, commandParts)
+		shellBuiltInHandler(commandName, argsString, outputWriter, errWriter, directories, argsParts)
 	} else {
 		for i := range len(directories) {
 			pathToExecutable, _ := checkForExecutable(directories[i], commandName)
@@ -318,7 +367,7 @@ func commandProcessor(input, PATH string) {
 				cmd.Stderr = errWriter
 				err := cmd.Run()
 				if err != nil {
-					fmt.Fprintln(errWriter, "Error running command: "+err.Error())
+					//fmt.Fprintln(errWriter, "Error running command: "+err.Error())
 				}
 				return
 			}
@@ -473,7 +522,7 @@ func parseCommandName(input, commandName string) (string, int) {
 	}
 	return commandName, i
 }
-func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter *os.File, directories, argsParts, commandParts []string) {
+func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter io.Writer, directories, argsParts []string) {
 	switch commandName {
 	case "exit":
 		if len(argsParts) > 0 && argsParts[0] == "0" {
@@ -505,7 +554,7 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 		return
 
 	case "pwd":
-		if len(commandParts) > 1 {
+		if len(argsParts) > 1 {
 			fmt.Fprintln(errWriter, "pwd takes no arguments but some were given")
 			return
 		}
@@ -518,7 +567,7 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 		return
 
 	case "cd":
-		if len(commandParts) != 2 {
+		if len(argsParts) != 1 {
 			fmt.Fprintln(errWriter, "cd takes exactly one argument")
 			return
 		}
