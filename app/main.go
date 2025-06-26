@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -19,9 +20,10 @@ import (
 
 const typeFound string = " is a shell builtin"
 
-var shellBuiltIn []string = []string{"echo", "exit", "type", "pwd", "cd"}
+var shellBuiltIn []string = []string{"echo", "exit", "type", "pwd", "cd", "history"}
 var escapeOptionsDoubleQuoted []rune = []rune{'\\', '$', '"', ' '}
 var escapeOptionUnquoted []rune = []rune{'\\', '$', '"', ' ', '\''}
+var history []string = []string{}
 
 // the AutoCompleter interface requires one method
 // Do(line []rune, pos int) (newLine [][]rune, length int)
@@ -136,6 +138,9 @@ func main() {
 			pipedCommandProccesor(pipedCommands, PATH)
 		} else {
 			commandProcessor(command, PATH)
+		}
+		if !strings.HasPrefix(command, "history") {
+			history = append(history, command)
 		}
 		completer.TabCount = 0
 		completer.LastInput = ""
@@ -585,6 +590,29 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 				return
 			}
 			fmt.Fprintln(errWriter, "Error running command: "+err.Error())
+			return
+		}
+	case "history":
+		history = append(history, commandName+" "+argsString)
+		switch len(argsParts) {
+		case 0:
+			for i, cmd := range history {
+				fmt.Printf("\t%d  %s\n", i+1, cmd)
+			}
+			return
+		case 1:
+			if limit, err := strconv.Atoi(argsString); err != nil {
+				fmt.Fprintln(errWriter, "history argument must be an integer")
+				return
+			} else {
+				limit = min(limit, len(history))
+				for i, cmd := range history[len(history)-limit:] {
+					fmt.Printf("\t%d  %s\n", len(history)-limit+i+1, cmd)
+				}
+				return
+			}
+		default:
+			fmt.Fprintln(errWriter, "history takes exactly one argument")
 			return
 		}
 	}
