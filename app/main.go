@@ -26,6 +26,7 @@ var escapeOptionsDoubleQuoted []rune = []rune{'\\', '$', '"', ' '}
 var escapeOptionUnquoted []rune = []rune{'\\', '$', '"', ' ', '\''}
 var history []string = []string{}
 var initializedHistoryLength int
+var indexLastAppendFile int = -1
 
 // the AutoCompleter interface requires one method
 // Do(line []rune, pos int) (newLine [][]rune, length int)
@@ -117,10 +118,10 @@ func haveSharedPrefix(shortestMatch string, autoCompleteResults [][]rune) bool {
 func main() {
 	PATH := os.Getenv("PATH")
 	HSTFILEPATH := os.Getenv("HISTFILE")
-	if HSTFILEPATH != "" {
-		appendHistoryFromFile(HSTFILEPATH, &history)
+	if HSTFILEPATH != "" && HSTFILEPATH != "/dev/null" {
+		indexLastAppendFile = appendHistoryFromFile(HSTFILEPATH, &history, -1)
+		initializedHistoryLength = len(history)
 	}
-	initializedHistoryLength = len(history)
 	completer := &TabAutoCompleter{
 		Commands: shellBuiltIn,
 		Path:     PATH,
@@ -277,16 +278,6 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 		} else {
 			cmdExec.Stdin = os.Stdin
 		}
-		/*
-			fmt.Printf("Command Name executable: %v\n", cmdName)
-			outputBytes := make([]byte, 1028)
-			_, err := prevInputPipeReader.Read(outputBytes)
-			if err != nil {
-				fmt.Printf("Error reading from previous command: %v\n", err)
-				return
-			}
-			fmt.Printf("Result from previous command: %v\n", string(outputBytes))
-		*/
 		if i < len(pipedCommands)-1 {
 			reader, writer := io.Pipe()
 			cmdExec.Stdout = writer
@@ -544,8 +535,9 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 			HSTFILEPATH := os.Getenv("HISTFILE")
 
 			history = append(history, "exit 0")
-			if HSTFILEPATH != "" {
-				appendHistoryToFile(HSTFILEPATH, history[initializedHistoryLength:])
+			if HSTFILEPATH != "" && HSTFILEPATH != "/dev/null" {
+				appendHistoryToFile(HSTFILEPATH, history, initializedHistoryLength)
+				initializedHistoryLength = len(history)
 			}
 			os.Exit(0)
 		} else {
@@ -567,7 +559,7 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 			fmt.Fprintln(outputWriter, typeArg+typeFound)
 			return
 		}
-		for i := range len(directories) {
+		for i, _ := range directories {
 			pathToExecutable, _ := checkForExecutable(directories[i], typeArg)
 			if pathToExecutable != "" {
 				fmt.Fprintln(outputWriter, typeArg+" is "+pathToExecutable)
@@ -633,14 +625,16 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 		if len(argsParts) == 2 {
 			switch argsParts[0] {
 			case "-r":
-				appendHistoryFromFile(argsParts[1], &history, initializedHistoryLength)
+				indexLastAppendFile = appendHistoryFromFile(argsParts[1], &history, indexLastAppendFile)
 				return
 			case "-w":
 				writeHistoryToFile(argsParts[1], history)
 				initializedHistoryLength = len(history)
+				indexLastAppendFile = len(history)
 				return
 			case "-a":
-				appendHistoryToFile(argsParts[1], history[initializedHistoryLength:])
+				appendHistoryToFile(argsParts[1], history, initializedHistoryLength)
+				initializedHistoryLength = len(history)
 				return
 			}
 		}
@@ -650,7 +644,7 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 		return
 	}
 }
-func appendHistoryFromFile(path string, history *[]string, initialHistoryLength int) {
+func appendHistoryFromFile(path string, history *[]string, indexLastAppendFile int) int {
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
 			fmt.Printf("File '%s' does not exist\n", path)
@@ -664,19 +658,24 @@ func appendHistoryFromFile(path string, history *[]string, initialHistoryLength 
 	}
 	defer f.Close()
 	r := bufio.NewReader(f)
+	i := 0
 	for {
 		cmd, err := r.ReadString('\n')
 		cmd = strings.TrimSpace(cmd)
 		if err != nil {
 			if err == io.EOF {
-				return
+				break
 			} else {
 				fmt.Printf("Error reading from file %s\n", path)
-				return
+				return 0
 			}
 		}
-		*history = append(*history, cmd)
+		if i > indexLastAppendFile {
+			*history = append(*history, cmd)
+		}
+		i++
 	}
+	return i
 }
 func writeHistoryToFile(path string, history []string) {
 	err := os.MkdirAll(filepath.Dir(path), 0755)
@@ -700,29 +699,11 @@ func writeHistoryToFile(path string, history []string) {
 		return
 	}
 }
-func appendHistoryToFile(path string, history []string) {
-	var indexOfLastAppend int = -1
-	twoAppends := false
-	countAppends := 0
-	for _, cmd := range history {
-		if cmd == "history -a "+path {
-			countAppends++
-		}
+func appendHistoryToFile(path string, history []string, initializedHistoryLength int) {
+	if len(history) <= initializedHistoryLength {
+		return
 	}
-	if countAppends > 1 {
-		twoAppends = true
-	}
-	if twoAppends {
-		for i, cmd := range history {
-			if cmd == "history -a "+path {
-				indexOfLastAppend = i
-				break
-			}
-		}
-	}
-
-	toAppendSlice := make([]string, 0)
-	toAppendSlice = history[indexOfLastAppend+1:]
+	toAppend := history[initializedHistoryLength:]
 	err := os.MkdirAll(filepath.Dir(path), 0755)
 	if err != nil {
 		fmt.Printf("Error creating intermediate directories for history file: %v\n", err)
@@ -734,7 +715,7 @@ func appendHistoryToFile(path string, history []string) {
 	}
 	defer f.Close()
 	w := bufio.NewWriter(f)
-	for _, cmd := range toAppendSlice {
+	for _, cmd := range toAppend {
 		w.WriteString(cmd + string('\n'))
 	}
 	err = w.Flush()
