@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"io"
 	"log"
@@ -24,6 +25,7 @@ var shellBuiltIn []string = []string{"echo", "exit", "type", "pwd", "cd", "histo
 var escapeOptionsDoubleQuoted []rune = []rune{'\\', '$', '"', ' '}
 var escapeOptionUnquoted []rune = []rune{'\\', '$', '"', ' ', '\''}
 var history []string = []string{}
+var initializedHistoryLength int
 
 // the AutoCompleter interface requires one method
 // Do(line []rune, pos int) (newLine [][]rune, length int)
@@ -114,6 +116,11 @@ func haveSharedPrefix(shortestMatch string, autoCompleteResults [][]rune) bool {
 }
 func main() {
 	PATH := os.Getenv("PATH")
+	HSTFILEPATH := os.Getenv("HISTFILE")
+	if HSTFILEPATH != "" {
+		appendHistoryFromFile(HSTFILEPATH, &history)
+	}
+	initializedHistoryLength = len(history)
 	completer := &TabAutoCompleter{
 		Commands: shellBuiltIn,
 		Path:     PATH,
@@ -132,6 +139,7 @@ func main() {
 		command, err := l.Readline()
 		if err != nil {
 			log.Println("Error reading string from standard in " + err.Error())
+			continue
 		}
 		if strings.Contains(command, "|") {
 			pipedCommands := separatePipedCommands(command)
@@ -214,6 +222,7 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 			}
 			if err != nil {
 				fmt.Println("Error creating out/err writer: " + err.Error())
+				return
 			}
 		}
 		cmd = strings.TrimSpace(cmd)
@@ -274,6 +283,7 @@ func pipedCommandProccesor(pipedCommands []string, PATH string) {
 			_, err := prevInputPipeReader.Read(outputBytes)
 			if err != nil {
 				fmt.Printf("Error reading from previous command: %v\n", err)
+				return
 			}
 			fmt.Printf("Result from previous command: %v\n", string(outputBytes))
 		*/
@@ -531,7 +541,16 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 	switch commandName {
 	case "exit":
 		if len(argsParts) > 0 && argsParts[0] == "0" {
+			HSTFILEPATH := os.Getenv("HISTFILE")
+
+			history = append(history, "exit 0")
+			if HSTFILEPATH != "" {
+				appendHistoryToFile(HSTFILEPATH, history[initializedHistoryLength:])
+			}
 			os.Exit(0)
+		} else {
+			fmt.Printf("Incorrectly constructed exit command")
+			return
 		}
 
 	case "echo":
@@ -593,72 +612,138 @@ func shellBuiltInHandler(commandName, argsString string, outputWriter, errWriter
 			return
 		}
 	case "history":
-		history = append(history, commandName+" "+argsString)
-		switch len(argsParts) {
-		case 0:
-			for i, cmd := range history {
-				fmt.Printf("\t%d  %s\n", i+1, cmd)
-			}
-			return
-		case 1:
-			if limit, err := strconv.Atoi(argsString); err != nil {
-				fmt.Fprintln(errWriter, "history argument must be an integer")
-				return
-			} else {
-				limit = min(limit, len(history))
-				for i, cmd := range history[len(history)-limit:] {
-					fmt.Printf("\t%d  %s\n", len(history)-limit+i+1, cmd)
-				}
-				return
-			}
-		default:
-			fmt.Fprintln(errWriter, "history takes exactly one argument")
+		toAppendHistory := commandName
+		if argsString != "" {
+			toAppendHistory = toAppendHistory + " " + argsString
+		}
+		history = append(history, toAppendHistory)
+		limit := len(history)
+		if len(argsParts) > 2 {
+			fmt.Fprintln(errWriter, "history command takes no more than two arguments")
 			return
 		}
+		if len(argsParts) == 1 {
+			if parsedLimit, err := strconv.Atoi(argsString); err != nil {
+				fmt.Fprintln(errWriter, "history argument must be an integer or valid flag received: "+argsString)
+				return
+			} else {
+				limit = min(parsedLimit, len(history))
+			}
+		}
+		if len(argsParts) == 2 {
+			switch argsParts[0] {
+			case "-r":
+				appendHistoryFromFile(argsParts[1], &history, initializedHistoryLength)
+				return
+			case "-w":
+				writeHistoryToFile(argsParts[1], history)
+				initializedHistoryLength = len(history)
+				return
+			case "-a":
+				appendHistoryToFile(argsParts[1], history[initializedHistoryLength:])
+				return
+			}
+		}
+		for i, cmd := range history[len(history)-limit:] {
+			fmt.Printf("\t%d  %s\n", len(history)-limit+i+1, cmd)
+		}
+		return
+	}
+}
+func appendHistoryFromFile(path string, history *[]string, initialHistoryLength int) {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			fmt.Printf("File '%s' does not exist\n", path)
+		} else {
+			fmt.Printf("Error getting file info for '%s': %v\n", path, err)
+		}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		fmt.Printf("Error opening file for reading %v\n", err)
+	}
+	defer f.Close()
+	r := bufio.NewReader(f)
+	for {
+		cmd, err := r.ReadString('\n')
+		cmd = strings.TrimSpace(cmd)
+		if err != nil {
+			if err == io.EOF {
+				return
+			} else {
+				fmt.Printf("Error reading from file %s\n", path)
+				return
+			}
+		}
+		*history = append(*history, cmd)
+	}
+}
+func writeHistoryToFile(path string, history []string) {
+	err := os.MkdirAll(filepath.Dir(path), 0755)
+	if err != nil {
+		fmt.Printf("Error creating intermediate directories for history file: %v\n", err)
+		return
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0755)
+	if err != nil {
+		fmt.Printf("Error opening file for writing history commands to: %v\n", err)
+		return
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	for _, cmd := range history {
+		w.WriteString(cmd + string('\n'))
+	}
+	err = w.Flush()
+	if err != nil {
+		fmt.Printf("Error flushing bytes to file: %v\n", err)
+		return
+	}
+}
+func appendHistoryToFile(path string, history []string) {
+	var indexOfLastAppend int = -1
+	twoAppends := false
+	countAppends := 0
+	for _, cmd := range history {
+		if cmd == "history -a "+path {
+			countAppends++
+		}
+	}
+	if countAppends > 1 {
+		twoAppends = true
+	}
+	if twoAppends {
+		for i, cmd := range history {
+			if cmd == "history -a "+path {
+				indexOfLastAppend = i
+				break
+			}
+		}
+	}
+
+	toAppendSlice := make([]string, 0)
+	toAppendSlice = history[indexOfLastAppend+1:]
+	err := os.MkdirAll(filepath.Dir(path), 0755)
+	if err != nil {
+		fmt.Printf("Error creating intermediate directories for history file: %v\n", err)
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0755)
+	if err != nil {
+		fmt.Printf("Error opening file for appending history commands to: %v\n", err)
+		return
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	for _, cmd := range toAppendSlice {
+		w.WriteString(cmd + string('\n'))
+	}
+	err = w.Flush()
+	if err != nil {
+		fmt.Printf("Error flushing bytes to file: %v\n", err)
+		return
 	}
 }
 
-/*
-	func parseOutputRedirect(input string) (string, string) {
-		var i int = 0
-		outputFilePath := ""
-		errFilePath := ""
-		foundRedirectSymbol := false
-		foundErrRedirectSymbol := false
-		inQuotes := false
-		for {
-			if i == len(input) {
-				break
-			}
-			if !inQuotes {
-				if input[i] == '>' {
-					if input[i-1] == '2' {
-						foundErrRedirectSymbol = true
-						if foundRedirectSymbol {
-							foundRedirectSymbol = false
-						}
-					} else {
-						foundRedirectSymbol = true
-						if foundErrRedirectSymbol {
-							foundErrRedirectSymbol = false
-						}
-					}
-				}
-			}
-			if foundRedirectSymbol {
-				outputFilePath += string(input[i])
-			}
-			if foundErrRedirectSymbol {
-				errFilePath += string(input[i])
-			}
-			i++
-		}
-		fmt.Println("FILE PATHS FOR REDIRECT")
-		fmt.Println(outputFilePath)
-		fmt.Println(errFilePath)
-		return strings.Trim(outputFilePath, " >"), strings.Trim(errFilePath, " >")
-	}
-*/
 func parseOutputRedirect(input string) (string, string, string, string) {
 	stdOutRedirectPattern := `(?:^|\s)1?>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
 	stdOutAppendPattern := `(?:^|\s)1?>>(?:\s*"([^"]+)"|\s*'([^']+)'|\s*([^\s>]+))`
